@@ -6,4 +6,6 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "chainlit>=2.10.0",
+    "ollama>=0.6.1",
+    "python-dotenv>=1.2.2",
 ]
