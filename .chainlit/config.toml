@@ -27,7 +27,7 @@ allow_origins = ["*"]
 unsafe_allow_html = false
 
 # Process and display mathematical expressions. This can clash with "$" characters in messages.
-latex = false
+latex = true
 
 # Enable rendering of user messages markdown
 user_message_markdown = true
@@ -72,13 +72,13 @@ reaction_on_message_received = false
 
 [features.audio]
     # Enable audio features
-    enabled = false
+    enabled = true
     # Sample rate of the audio
     sample_rate = 24000
 
 [features.mcp]
     # Enable Model Context Protocol (MCP) features
-    enabled = false
+    enabled = true
 
 [features.mcp.sse]
     enabled = true
@@ -134,7 +134,7 @@ cot = "full"
 # custom_js = "/public/test.js"
 
 # The style of alert boxes. Can be "classic" or "modern".
-alert_style = "classic"
+alert_style = "modern"
 
 # Specify additional attributes for custom JS file
 # custom_js_attributes = "async type = \"module\""

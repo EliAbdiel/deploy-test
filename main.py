@@ -1,40 +1,91 @@
 import os
 import logging
 import chainlit as cl
-from dotenv import load_dotenv
-from ollama import AsyncClient
-from typing import Dict, Optional
+from datetime import datetime
 from chainlit.types import ThreadDict
-from ollama._types import ChatResponse
+from typing import List, Dict, Optional, AsyncIterator
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
+from ollama import AsyncClient, ChatResponse, web_search, web_fetch
 
-load_dotenv()
 
 # Configure the logging system (defaults to WARNING level and console output)
 logger = logging.getLogger(__name__)
 
-host = os.getenv('OLLAMA_BASE_URL')
-model = os.getenv('MODEL')
-secret = os.getenv('OLLAMA_API_KEY')
-user = os.getenv('USER')
-password = os.getenv('PASSWORD')
-host_db = os.getenv('HOST')
-port = os.getenv('PORT')
-database = os.getenv('DATABASE')
-
-if not all([host, model, secret, user, password, host_db, port, database]):
-    logger.error("One or more environment variables are missing. Please check your .env file.")
-    raise ValueError("Missing environment variables")
+host = os.environ.get('OLLAMA_BASE_URL')
+model = os.environ.get('MODEL')
+secret = os.environ.get('OLLAMA_API_KEY')
+connection_string = os.environ.get('POSTGRES_URL')
 
 
-async def call_ollama(message: list) -> ChatResponse:
+if all([host, model, secret, connection_string]):
+    logger.info("All environment variables found in your .env file.")
+else:
+    logger.warning("One or more environment variables are missing. Please check your .env file.")
+
+
+async def call_ollama(messages: List[Dict]):
     client = AsyncClient(
         host=host,
         headers={"Authorization": f"Bearer {secret}"},
     )
-    response = await client.chat(model=model, messages=message, stream=True)
-    logging.info('Ollama response successfully')
-    return response
+
+    web_tools = {'web_search': web_search, 'web_fetch': web_fetch}
+    max_iterations = 0
+
+    while max_iterations < 3:
+        try:
+            response: AsyncIterator[ChatResponse] = await client.chat(
+                model=model,
+                messages=messages,
+                tools=[web_search, web_fetch],
+                stream=True,
+                options={
+                    'temperature': 0,
+                    'top_p': 0.9,
+                    'num_ctx':512
+                },
+            )
+        except Exception as ex:
+            logger.error(f'Call LLM Error: {e}')
+
+        if response is None:
+            logger.error('No response from ollama')
+            break
+
+        tool_calls = []
+        internal_message_content = ''
+
+        async for part in response:
+            if part.message.tool_calls:
+                tool_calls.extend(part.message.tool_calls)
+            if part.message.content:
+                internal_message_content += part.message.content
+                yield part.message.content
+
+        if internal_message_content != '' or len(tool_calls) > 0:
+            # logger.info(f"Internal Messages: {internal_message_content}")
+            messages.append({'role': 'assistant', 'content': internal_message_content, 'tool_calls': tool_calls})
+
+        if tool_calls:
+            tool_executed = False
+            for tool_call in tool_calls:
+                tool_name = tool_call.function.name
+                function_to_call = web_tools.get(tool_name)
+                if function_to_call:
+                    tool_args = tool_call.function.arguments
+                    logger.info(f"Executed tool: {tool_name}, with arguments: {tool_args}")
+                    tool_result = function_to_call(**tool_args)
+
+                    messages.append({'role': 'tool', 'content': str(tool_result)[:2000 * 4], 'tool_name': tool_name})
+                    tool_executed = True
+                else:
+                    messages.append({'role': 'tool', 'content': f"Tool '{tool_name}' not found", 'tool_name': tool_name})
+                    tool_executed = True
+            if not tool_executed:
+                break
+
+        max_iterations += 1
+        logger.info(f"Max Tool Called: {max_iterations}")
 
 
 @cl.oauth_callback
@@ -57,16 +108,27 @@ async def on_chat_start() -> None:
 async def on_message(message: cl.Message):
     try:
         chat_history = cl.user_session.get("chat_history")
-        chat_history.append({"role": "user", "content": message.content})
+
+        current_time = datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
+
+        sys_msg = 'Your goal is to use web_search, and web_fetch to find accurate, up-to-date information, answer factual questions, or explore broad topics.'
         
-        result = await call_ollama(chat_history)
+        system_message = f"""{sys_msg}
+
+        System Context:
+        The current time is {current_time}. Keep this in mind when answering time-sensitive queries."""
+
+        chat_history.append({'role': 'system', 'content': system_message})
+
+        chat_history.append({'role': 'user', 'content': message.content})
+        
         msg = cl.Message(content='')
 
-        async for part in result:
-            if token := part.message.content or "":
-                await msg.stream_token(token)
+        async for part in call_ollama(chat_history):
+            # if token := part or "":
+            await msg.stream_token(part)
 
-        chat_history.append({"role": "assistant", "content": msg.content})
+        chat_history.append({'role': 'assistant', 'content': msg.content})
         logging.info('Assistant response successfully')
         await msg.update()
     except Exception as e:
@@ -74,15 +136,10 @@ async def on_message(message: cl.Message):
         await cl.Message(content=f"You say: {message.content}")
 
 
-def connection_string():
-    return f"postgresql+asyncpg://{user}:{password}@{host_db}:{port}/{database}"
-
-
 @cl.data_layer
 def get_data_layer():
-    connection_str = connection_string()
     return SQLAlchemyDataLayer(
-        conninfo=connection_str, 
+        conninfo=connection_string, 
         # storage_provider=storage_client
     )
 
